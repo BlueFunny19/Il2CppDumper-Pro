@@ -38,13 +38,17 @@ Use [dnSpy](https://github.com/0xd4d/dnSpy), [ILSpy](https://github.com/icsharpc
 
 Can be used to extract Unity `MonoBehaviour` and `MonoScript`, for [UtinyRipper](https://github.com/mafaca/UtinyRipper), [UABE](https://7daystodie.com/forums/showthread.php?22675-Unity-Assets-Bundle-Extractor)
 
-#### ida.py
+#### ida_py3.py
 
-For IDA
+For IDA Pro 7.4 through 9.3 with IDAPython 3. Use this script with current IDA versions.
 
-#### ida_with_struct.py
+#### ida_with_struct_py3.py
 
-For IDA, read il2cpp.h file and apply structure information in IDA
+For IDA Pro 7.4 through 9.3 with IDAPython 3, read il2cpp.h and apply type information in IDA.
+
+#### ida.py / ida_with_struct.py
+
+Legacy Python 2 scripts retained for older IDA versions.
 
 #### il2cpp.h
 
@@ -64,7 +68,7 @@ For Ghidra, work with [ghidra-wasm-plugin](https://github.com/nneonneo/ghidra-wa
 
 #### script.json
 
-For ida.py, ghidra.py and Il2CppBinaryNinja
+For the IDA scripts, ghidra.py and Il2CppBinaryNinja
 
 #### stringliteral.json
 

@@ -36,13 +36,17 @@ Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
 
 可用于提取Unity的`MonoBehaviour`和`MonoScript`，适用于[UtinyRipper](https://github.com/mafaca/UtinyRipper)或者[UABE](https://7daystodie.com/forums/showthread.php?22675-Unity-Assets-Bundle-Extractor)等
 
-#### ida.py
+#### ida_py3.py
 
-用于IDA
+用于配备 IDAPython 3 的 IDA Pro 7.4 至 9.3；当前版本 IDA 请使用此脚本。
 
-#### ida_with_struct.py
+#### ida_with_struct_py3.py
 
-用于IDA, 读取il2cpp.h文件并在IDA中应用结构信息
+用于配备 IDAPython 3 的 IDA Pro 7.4 至 9.3，读取 il2cpp.h 并在 IDA 中应用类型信息。
+
+#### ida.py / ida_with_struct.py
+
+为兼容旧版 IDA 而保留的 Python 2 脚本。
 
 #### il2cpp.h
 

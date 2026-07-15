@@ -1,87 +1,221 @@
 # -*- coding: utf-8 -*-
+"""Import Il2CppDumper script.json and il2cpp.h in IDA Pro 7.4 through 9.3."""
+
 import json
 
-processFields = [
-	"ScriptMethod",
-	"ScriptString",
-	"ScriptMetadata",
-	"ScriptMetadataMethod",
-	"Addresses",
-]
+import ida_auto
+import ida_bytes
+import ida_funcs
+import ida_kernwin
+import ida_name
+import ida_nalt
+import ida_segment
+import ida_typeinf
 
-imageBase = idaapi.get_imagebase()
 
-def get_addr(addr):
-	return imageBase + addr
+PROCESS_FIELDS = {
+    "ScriptMethod",
+    "ScriptString",
+    "ScriptMetadata",
+    "ScriptMetadataMethod",
+    "Addresses",
+}
 
-def set_name(addr, name):
-	ret = idc.set_name(addr, name, SN_NOWARN | SN_NOCHECK)
-	if ret == 0:
-		new_name = name + '_' + str(addr)
-		ret = idc.set_name(addr, new_name, SN_NOWARN | SN_NOCHECK)
+IMAGE_BASE = ida_nalt.get_imagebase()
+IDATI = ida_typeinf.get_idati()
+NAME_LIMIT = max(1, int(getattr(ida_name, "MAXNAMELEN", 512)) - 24)
+NAME_FLAGS = ida_name.SN_NOWARN | ida_name.SN_NOCHECK
+NAME_FLAGS |= getattr(ida_name, "SN_FORCE", 0)
+
+
+def ea_from_rva(value):
+    return IMAGE_BASE + int(value)
+
+
+def is_mapped(ea):
+    return ida_segment.getseg(ea) is not None
+
+
+def safe_name(ea, value):
+    if not is_mapped(ea):
+        return False
+
+    name = str(value or "").strip()
+    if not name:
+        return False
+
+    name = name[:NAME_LIMIT]
+    if ida_name.set_name(ea, name, NAME_FLAGS):
+        return True
+
+    # SN_FORCE is unavailable on some older IDAPython builds.
+    suffix = "_{:X}".format(ea)
+    return bool(
+        ida_name.set_name(
+            ea,
+            name[: max(1, NAME_LIMIT - len(suffix))] + suffix,
+            ida_name.SN_NOWARN | ida_name.SN_NOCHECK,
+        )
+    )
+
 
 def make_function(start, end):
-	next_func = idc.get_next_func(start)
-	if next_func < end:
-		end = next_func
-	if idc.get_func_attr(start, FUNCATTR_START) == start:
-		ida_funcs.del_func(start)
-	ida_funcs.add_func(start, end)
+    if start >= end:
+        return "skipped"
 
-path = idaapi.ask_file(False, '*.json', 'script.json from Il2cppdumper')
-hpath = idaapi.ask_file(False, '*.h', 'il2cpp.h from Il2cppdumper')
-parse_decls(open(hpath, 'r').read(), 0)
-data = json.loads(open(path, 'rb').read().decode('utf-8'))
+    segment = ida_segment.getseg(start)
+    if segment is None:
+        return "skipped"
 
-if "Addresses" in data and "Addresses" in processFields:
-	addresses = data["Addresses"]
-	for index in range(len(addresses) - 1):
-		start = get_addr(addresses[index])
-		end = get_addr(addresses[index + 1])
-		make_function(start, end)
+    end = min(end, segment.end_ea)
+    if start >= end:
+        return "skipped"
 
-if "ScriptMethod" in data and "ScriptMethod" in processFields:
-	scriptMethods = data["ScriptMethod"]
-	for scriptMethod in scriptMethods:
-		addr = get_addr(scriptMethod["Address"])
-		name = scriptMethod["Name"]
-		set_name(addr, name)
-		signature = scriptMethod["Signature"]
-		if apply_type(addr, parse_decl(signature, 0), 1) == False:
-			print("apply_type failed:", hex(addr), signature)
+    existing = ida_funcs.get_func(start)
+    if existing is not None:
+        return "existing" if existing.start_ea == start else "skipped"
 
-if "ScriptString" in data and "ScriptString" in processFields:
-	index = 1
-	scriptStrings = data["ScriptString"]
-	for scriptString in scriptStrings:
-		addr = get_addr(scriptString["Address"])
-		value = scriptString["Value"]
-		name = "StringLiteral_" + str(index)
-		idc.set_name(addr, name, SN_NOWARN)
-		idc.set_cmt(addr, value, 1)
-		index += 1
+    return "created" if ida_funcs.add_func(start, end) else "failed"
 
-if "ScriptMetadata" in data and "ScriptMetadata" in processFields:
-	scriptMetadatas = data["ScriptMetadata"]
-	for scriptMetadata in scriptMetadatas:
-		addr = get_addr(scriptMetadata["Address"])
-		name = scriptMetadata["Name"]
-		set_name(addr, name)
-		idc.set_cmt(addr, name, 1)
-		if scriptMetadata["Signature"] is not None:
-			signature = scriptMetadata["Signature"]
-			if apply_type(addr, parse_decl(signature, 0), 1) == False:
-				print("apply_type failed:", hex(addr), signature)
 
-if "ScriptMetadataMethod" in data and "ScriptMetadataMethod" in processFields:
-	scriptMetadataMethods = data["ScriptMetadataMethod"]
-	for scriptMetadataMethod in scriptMetadataMethods:
-		addr = get_addr(scriptMetadataMethod["Address"])
-		name = scriptMetadataMethod["Name"]
-		methodAddr = get_addr(scriptMetadataMethod["MethodAddress"])
-		set_name(addr, name)
-		idc.set_cmt(addr, name, 1)
-		idc.set_cmt(addr, '{0:X}'.format(methodAddr), 0)
+def set_comment(ea, text, repeatable):
+    return is_mapped(ea) and bool(ida_bytes.set_cmt(ea, str(text), repeatable))
 
-print('Script finished!')
 
+def import_header(path):
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+        declarations = handle.read()
+
+    flags = 0
+    for flag in ("HTI_DCL", "HTI_NWR", "HTI_RELAXED", "HTI_SEMICOLON"):
+        flags |= getattr(ida_typeinf, flag, 0)
+    return int(ida_typeinf.parse_decls(IDATI, declarations, None, flags))
+
+
+def apply_declaration(ea, declaration):
+    if not is_mapped(ea) or not declaration:
+        return False
+
+    declaration = str(declaration).strip()
+    if not declaration.endswith(";"):
+        declaration += ";"
+    return bool(ida_typeinf.apply_cdecl(IDATI, ea, declaration))
+
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8-sig") as handle:
+        return json.load(handle)
+
+
+def main():
+    ida_auto.auto_wait()
+    json_path = ida_kernwin.ask_file(
+        False,
+        "*.json",
+        "Select script.json generated by Il2CppDumper",
+    )
+    if not json_path:
+        print("[IL2CPP] Cancelled.")
+        return
+
+    header_path = ida_kernwin.ask_file(
+        False,
+        "*.h",
+        "Select il2cpp.h generated by Il2CppDumper",
+    )
+    if not header_path:
+        print("[IL2CPP] Cancelled.")
+        return
+
+    print("[IL2CPP] Importing declarations from: {}".format(header_path))
+    header_errors = import_header(header_path)
+    print("[IL2CPP] Header parser reported {} error(s).".format(header_errors))
+
+    data = load_json(json_path)
+    stats = {
+        "functions_created": 0,
+        "functions_existing": 0,
+        "functions_skipped": 0,
+        "functions_failed": 0,
+        "methods_named": 0,
+        "method_types_applied": 0,
+        "method_types_failed": 0,
+        "strings_named": 0,
+        "metadata_named": 0,
+        "metadata_types_applied": 0,
+        "metadata_types_failed": 0,
+        "metadata_methods_named": 0,
+    }
+
+    if "Addresses" in data and "Addresses" in PROCESS_FIELDS:
+        addresses = sorted({int(value) for value in data["Addresses"] if int(value) > 0})
+        for rva_start, rva_end in zip(addresses, addresses[1:]):
+            result = make_function(ea_from_rva(rva_start), ea_from_rva(rva_end))
+            stats["functions_" + result] += 1
+
+    if "ScriptMethod" in data and "ScriptMethod" in PROCESS_FIELDS:
+        for item in data["ScriptMethod"]:
+            ea = ea_from_rva(item["Address"])
+            if safe_name(ea, item.get("Name", "")):
+                stats["methods_named"] += 1
+            if item.get("Signature"):
+                applied = apply_declaration(ea, item["Signature"])
+                key = "method_types_applied" if applied else "method_types_failed"
+                stats[key] += 1
+                if not applied:
+                    print(
+                        "[IL2CPP] apply_cdecl failed: 0x{:X} {}".format(
+                            ea, item["Signature"]
+                        )
+                    )
+
+    if "ScriptString" in data and "ScriptString" in PROCESS_FIELDS:
+        for index, item in enumerate(data["ScriptString"], start=1):
+            ea = ea_from_rva(item["Address"])
+            if safe_name(ea, "StringLiteral_{}".format(index)):
+                set_comment(ea, item.get("Value", ""), True)
+                stats["strings_named"] += 1
+
+    if "ScriptMetadata" in data and "ScriptMetadata" in PROCESS_FIELDS:
+        for item in data["ScriptMetadata"]:
+            ea = ea_from_rva(item["Address"])
+            name = item.get("Name", "")
+            if safe_name(ea, name):
+                set_comment(ea, name, True)
+                stats["metadata_named"] += 1
+            if item.get("Signature"):
+                applied = apply_declaration(ea, item["Signature"])
+                key = "metadata_types_applied" if applied else "metadata_types_failed"
+                stats[key] += 1
+                if not applied:
+                    print(
+                        "[IL2CPP] apply_cdecl failed: 0x{:X} {}".format(
+                            ea, item["Signature"]
+                        )
+                    )
+
+    if "ScriptMetadataMethod" in data and "ScriptMetadataMethod" in PROCESS_FIELDS:
+        for item in data["ScriptMetadataMethod"]:
+            ea = ea_from_rva(item["Address"])
+            name = item.get("Name", "")
+            if safe_name(ea, name):
+                set_comment(ea, name, True)
+                set_comment(
+                    ea,
+                    "Method EA: 0x{:X}".format(ea_from_rva(item["MethodAddress"])),
+                    False,
+                )
+                stats["metadata_methods_named"] += 1
+
+    ida_auto.auto_wait()
+    print("\n[IL2CPP] Import complete")
+    print("[IL2CPP] Image base: 0x{:X}".format(IMAGE_BASE))
+    print("[IL2CPP] JSON: {}".format(json_path))
+    print("[IL2CPP] Header: {}".format(header_path))
+    print("[IL2CPP] Header errors: {}".format(header_errors))
+    for key, value in stats.items():
+        print("[IL2CPP] {}: {}".format(key, value))
+
+
+if __name__ == "__main__":
+    main()
